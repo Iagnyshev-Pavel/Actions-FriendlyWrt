@@ -78,6 +78,21 @@ jobs:
         cd project
         source ../scripts/add_packages.sh
         source ../scripts/custome_config.sh
+        
+        # === ADD YOUR AmneziaWG feed from your fork ===
+        cd friendlywrt   # this is where the OpenWrt source lives after repo sync
+        echo "src-git awg https://github.com/Slava-Shchipunov/awg-openwrt.git" >> feeds.conf.default
+    
+        # Update feeds and install packages
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+    
+        # Enable the AmneziaWG packages in the rockchip config (adjust as needed)
+        cat >> configs/rockchip/01-nanopi << EOF
+        CONFIG_PACKAGE_kmod-amneziawg=y
+        CONFIG_PACKAGE_amneziawg-tools=y
+        CONFIG_PACKAGE_luci-proto-amneziawg=y
+        EOF
 
     - name: Prepare dot config and feeds
       run: |
@@ -140,9 +155,9 @@ jobs:
 
     strategy:
       matrix:
-        VERSION: ['23.05', '24.10']
-        CPU: [rk3328, rk3528, rk3399, rk3566, rk3568, rk3576, rk3588]
-        SET: [docker, non-docker]
+        VERSION: ['24.10']
+        CPU: [rk3328]
+        SET: [non-docker]
     steps:
     - name: Checkout
       uses: actions/checkout@main
