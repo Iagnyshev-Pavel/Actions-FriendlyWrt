@@ -1,0 +1,156 @@
+name: Build AWG IPKs for FriendlyWrt
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  OPENWRT_BRANCH: openwrt-24.10
+  TARGET: rockchip
+  SUBTARGET: armv8
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      # ── Free up disk space ──────────────────────────────────────────────────
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get autoremove -y
+          sudo apt-get autoclean
+          df -h
+
+      # ── Install build dependencies ──────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git \
+            libncurses5-dev libssl-dev python3-setuptools \
+            rsync unzip zlib1g-dev file wget curl
+
+      # ── Clone FriendlyWrt source ────────────────────────────────────────────
+      # This is the FriendlyElec fork of OpenWrt that contains
+      # the patched kernel 6.6.84+ used on your R2S Plus
+      - name: Clone FriendlyWrt
+        run: |
+          git clone --depth 1 \
+            -b ${{ env.OPENWRT_BRANCH }} \
+            https://github.com/friendlyarm/friendlywrt \
+            openwrt
+          cd openwrt
+          echo "Kernel version in tree:"
+          cat include/kernel-version.mk | grep LINUX_VERSION | head -5
+
+      # ── Add awg-openwrt as a custom feed ────────────────────────────────────
+      - name: Add awg-openwrt feed
+        run: |
+          cd openwrt
+          echo "src-git awg https://github.com/Slava-Shchipunov/awg-openwrt.git" \
+            >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a -p awg
+
+      # ── Write .config ────────────────────────────────────────────────────────
+      # Only select what we need — no full image build
+      - name: Configure build
+        run: |
+          cd openwrt
+          cat > .config <<'EOF'
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          # kmod must be =m (module), not =y
+          CONFIG_PACKAGE_kmod-amneziawg=m
+          CONFIG_PACKAGE_amneziawg-tools=y
+          CONFIG_PACKAGE_luci-proto-amneziawg=y
+          EOF
+          make defconfig
+
+      # ── Cache the toolchain (saves ~2h on repeat runs) ──────────────────────
+      - name: Cache toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/staging_dir/toolchain-*
+            openwrt/staging_dir/host
+          key: toolchain-friendlywrt-${{ env.OPENWRT_BRANCH }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-v1
+
+      # ── Build tools (only if cache miss) ────────────────────────────────────
+      - name: Build tools
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          cd openwrt
+          make tools/install -j$(nproc) V=s 2>&1 | tail -20
+
+      # ── Build toolchain (only if cache miss) ─────────────────────────────────
+      - name: Build toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          cd openwrt
+          make toolchain/install -j$(nproc) V=s 2>&1 | tail -20
+
+      # ── Compile kernel (REQUIRED for kmod — cannot skip or cache easily) ────
+      # This compiles the kernel and generates Module.symvers
+      # which kmod-amneziawg links against
+      - name: Compile kernel
+        run: |
+          cd openwrt
+          make target/linux/compile -j$(nproc) V=s 2>&1 | tail -30
+
+      # ── Build only the AWG packages ──────────────────────────────────────────
+      - name: Build kmod-amneziawg
+        run: |
+          cd openwrt
+          make package/kmod-amneziawg/compile -j$(nproc) V=s
+
+      - name: Build amneziawg-tools
+        run: |
+          cd openwrt
+          make package/amneziawg-tools/compile -j$(nproc) V=s
+
+      - name: Build luci-proto-amneziawg
+        run: |
+          cd openwrt
+          make package/luci-proto-amneziawg/compile -j$(nproc) V=s
+
+      # ── Collect the IPKs ─────────────────────────────────────────────────────
+      - name: Collect IPKs
+        run: |
+          mkdir -p output
+          find openwrt/bin -name "*amneziawg*.ipk" | while read f; do
+            cp "$f" output/
+            echo "Found: $f"
+          done
+          ls -lh output/
+          # Verify kernel version baked into kmod filename
+          ls output/kmod-amneziawg*.ipk
+
+      # ── Upload as workflow artifact (always) ─────────────────────────────────
+      - name: Upload IPKs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: awg-ipks-friendlywrt-${{ env.OPENWRT_BRANCH }}-rockchip-armv8
+          path: output/*.ipk
+          retention-days: 30
+
+      # ── Also publish as a GitHub Release (only on tag push) ──────────────────
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/*.ipk
+          body: |
+            AWG IPKs built against FriendlyWrt ${{ env.OPENWRT_BRANCH }} kernel
+            Target: rockchip/armv8 (NanoPi R2S Plus)
