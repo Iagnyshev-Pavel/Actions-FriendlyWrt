@@ -7,7 +7,7 @@ on:
       - 'v*'
 
 env:
-  OPENWRT_BRANCH: openwrt-24.10
+  OPENWRT_BRANCH: master-v24.10
   TARGET: rockchip
   SUBTARGET: armv8
 
