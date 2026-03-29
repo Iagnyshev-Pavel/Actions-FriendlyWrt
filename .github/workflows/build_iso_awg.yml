@@ -107,6 +107,7 @@ jobs:
           CONFIG_PACKAGE_luci-app-opkg=y
           CONFIG_PACKAGE_htop=y
           CONFIG_PACKAGE_nano=y
+          CONFIG_SIGNED_PACKAGES=n
           EOF
 
           make defconfig
@@ -218,8 +219,3 @@ jobs:
           path: output/ipks/
           retention-days: 30
 
-      # ── Optional SSH debug session ────────────────────────────────────────────
-      - name: SSH debug session
-        if: ${{ github.event.inputs.ssh == 'true' || failure() }}
-        uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 30
